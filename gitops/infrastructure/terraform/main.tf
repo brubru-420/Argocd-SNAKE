@@ -8,19 +8,24 @@ terraform {
   }
 }
 
-# Le TF Controller injecte le provider (in-cluster). Pas de config manuelle.
 provider "kubernetes" {}
 
-variable "environments" {
+# Namespaces applicatifs : GERES PAR ARGOCD, on les reference en lecture seule.
+# Terraform ne les cree pas (il ne rentre pas en conflit avec ArgoCD).
+variable "app_namespaces" {
   type    = list(string)
   default = ["snake-dev", "snake-prod"]
 }
 
-# Namespaces applicatifs gérés en IaC
-resource "kubernetes_namespace" "snake" {
-  for_each = toset(var.environments)
+data "kubernetes_namespace" "app" {
+  for_each = toset(var.app_namespaces)
+  metadata { name = each.value }
+}
+
+# --- Ressource 100% geree par Terraform : un namespace dedie a l'infra ---
+resource "kubernetes_namespace" "infra" {
   metadata {
-    name = each.value
+    name = "snake-infra"
     labels = {
       "app.kubernetes.io/part-of" = "argocd-snake"
       "managed-by"                = "terraform-controller"
@@ -28,9 +33,9 @@ resource "kubernetes_namespace" "snake" {
   }
 }
 
-# RBAC : rôle en lecture seule sur les pods de chaque namespace
+# RBAC : role lecture seule dans chaque namespace applicatif (existant)
 resource "kubernetes_role" "snake_viewer" {
-  for_each = kubernetes_namespace.snake
+  for_each = data.kubernetes_namespace.app
   metadata {
     name      = "snake-viewer"
     namespace = each.value.metadata[0].name
@@ -42,9 +47,9 @@ resource "kubernetes_role" "snake_viewer" {
   }
 }
 
-# Network Policy : on n'autorise que le trafic entrant vers le port 3000
+# Network policy : n'autorise que le trafic entrant vers le port 3000
 resource "kubernetes_network_policy" "snake" {
-  for_each = kubernetes_namespace.snake
+  for_each = data.kubernetes_namespace.app
   metadata {
     name      = "snake-allow-http"
     namespace = each.value.metadata[0].name
@@ -63,6 +68,6 @@ resource "kubernetes_network_policy" "snake" {
   }
 }
 
-output "namespaces" {
-  value = [for ns in kubernetes_namespace.snake : ns.metadata[0].name]
+output "infra_namespace" {
+  value = kubernetes_namespace.infra.metadata[0].name
 }
